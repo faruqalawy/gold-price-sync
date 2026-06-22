@@ -68,6 +68,7 @@ async function upsertCurrent(latest) {
   const spotIdrPerOz = rate.price;
   const bidIdrPerOz = typeof rate.bid === 'number' ? rate.bid : spotIdrPerOz * (1 - BUY_SPREAD_BPS / 10000);
   const askIdrPerOz = typeof rate.ask === 'number' ? rate.ask : spotIdrPerOz * (1 + SELL_SPREAD_BPS / 10000);
+  const spotIdrPerGram = toRupiah(spotIdrPerOz / OUNCE_TO_GRAM);
 
   const buyIdrPerGram = toRupiah(bidIdrPerOz / OUNCE_TO_GRAM);
   const sellIdrPerGram = toRupiah(askIdrPerOz / OUNCE_TO_GRAM);
@@ -76,11 +77,33 @@ async function upsertCurrent(latest) {
     type: METAOBJECT_TYPE_CURRENT,
     handle: METAOBJECT_HANDLE_CURRENT,
     fields: [
-      { key: 'updated_at', value: new Date(latest.timestamp || new Date().toISOString()).toISOString() },
-      { key: 'buy_price_idr', value: String(buyIdrPerGram) },
-      { key: 'sell_price_idr', value: String(sellIdrPerGram) },
-      { key: 'source', value: 'metals.dev spot' },
-    ],
+      {
+        key: 'updated_at',
+        value: new Date(
+          latest.timestamp || new Date().toISOString()
+        ).toISOString()
+      },
+
+      {
+        key: 'spot_price_idr',
+        value: String(spotIdrPerGram)
+      },
+
+      {
+        key: 'buy_price_idr',
+        value: String(buyIdrPerGram)
+      },
+
+      {
+        key: 'sell_price_idr',
+        value: String(sellIdrPerGram)
+      },
+
+      {
+        key: 'source',
+        value: 'metals.dev spot'
+      }
+    ]
   });
 
   console.log('[gold-price-sync] updated current snapshot', {
