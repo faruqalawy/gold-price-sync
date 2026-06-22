@@ -1,0 +1,31 @@
+name: Gold Price Daily Sync
+
+on:
+  schedule:
+    - cron: '0 1 * * *' # 08:00 WIB = 01:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run sync
+        run: node sync.js
+        env:
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          SHOPIFY_API_VERSION: ${{ secrets.SHOPIFY_API_VERSION }}
+          METALS_API_KEY: ${{ secrets.METALS_API_KEY }}
+          METALS_BASE_URL: ${{ secrets.METALS_BASE_URL }}
+          BUY_SPREAD_BPS: ${{ secrets.BUY_SPREAD_BPS }}
+          SELL_SPREAD_BPS: ${{ secrets.SELL_SPREAD_BPS }}
+          MAX_HISTORY_DAYS: ${{ secrets.MAX_HISTORY_DAYS }}

@@ -1,0 +1,14 @@
+{
+  "name": "gold-price-sync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Daily Shopify metaobject sync for gold prices",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "sync": "node sync.js",
+    "bootstrap": "node sync.js --bootstrap"
+  }
+}
