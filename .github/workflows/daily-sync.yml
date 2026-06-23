@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 1 * * *' # 08:00 WIB = 01:00 UTC
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'Run full bootstrap history rebuild'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   sync:
@@ -19,7 +28,12 @@ jobs:
           node-version: '20'
 
       - name: Run sync
-        run: node sync.js
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.bootstrap }}" = "true" ]; then
+            node sync.js --bootstrap
+          else
+            node sync.js
+          fi
         env:
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}

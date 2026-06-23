@@ -52,7 +52,6 @@ async function main() {
 }
 
 async function fetchLatestSpot() {
-  // Spot endpoint returns spot price, bid, ask, low, high, change, and change_percent.
   const latest = await metalsJson(`/metal/spot?metal=gold&currency=IDR`);
 
   const rate = latest?.rate;
@@ -65,11 +64,19 @@ async function fetchLatestSpot() {
 
 async function upsertCurrent(latest) {
   const rate = latest?.rate;
-  const spotIdrPerOz = rate.price;
-  const bidIdrPerOz = typeof rate.bid === 'number' ? rate.bid : spotIdrPerOz * (1 - BUY_SPREAD_BPS / 10000);
-  const askIdrPerOz = typeof rate.ask === 'number' ? rate.ask : spotIdrPerOz * (1 + SELL_SPREAD_BPS / 10000);
-  const spotIdrPerGram = toRupiah(spotIdrPerOz / OUNCE_TO_GRAM);
 
+  const spotIdrPerOz = rate.price;
+  const bidIdrPerOz =
+    typeof rate.bid === 'number'
+      ? rate.bid
+      : spotIdrPerOz * (1 - BUY_SPREAD_BPS / 10000);
+
+  const askIdrPerOz =
+    typeof rate.ask === 'number'
+      ? rate.ask
+      : spotIdrPerOz * (1 + SELL_SPREAD_BPS / 10000);
+
+  const spotIdrPerGram = toRupiah(spotIdrPerOz / OUNCE_TO_GRAM);
   const buyIdrPerGram = toRupiah(bidIdrPerOz / OUNCE_TO_GRAM);
   const sellIdrPerGram = toRupiah(askIdrPerOz / OUNCE_TO_GRAM);
 
@@ -79,35 +86,30 @@ async function upsertCurrent(latest) {
     fields: [
       {
         key: 'updated_at',
-        value: new Date(
-          latest.timestamp || new Date().toISOString()
-        ).toISOString()
+        value: new Date(latest.timestamp || new Date().toISOString()).toISOString(),
       },
-
       {
         key: 'spot_price_idr',
-        value: String(spotIdrPerGram)
+        value: String(spotIdrPerGram),
       },
-
       {
         key: 'buy_price_idr',
-        value: String(buyIdrPerGram)
+        value: String(buyIdrPerGram),
       },
-
       {
         key: 'sell_price_idr',
-        value: String(sellIdrPerGram)
+        value: String(sellIdrPerGram),
       },
-
       {
         key: 'source',
-        value: 'metals.dev spot'
-      }
-    ]
+        value: 'metals.dev spot',
+      },
+    ],
   });
 
   console.log('[gold-price-sync] updated current snapshot', {
     updated_at: latest.timestamp || new Date().toISOString(),
+    spot_price_idr: spotIdrPerGram,
     buy_price_idr: buyIdrPerGram,
     sell_price_idr: sellIdrPerGram,
   });
@@ -151,15 +153,18 @@ async function appendTodayToDataset(existing, latest) {
 
   const today = toDateKey(latest.timestamp || new Date().toISOString());
 
-  const spotIdrPerOz = rate.price;
-  const bidIdrPerOz = typeof rate.bid === 'number' ? rate.bid : spotIdrPerOz * (1 - BUY_SPREAD_BPS / 10000);
-  const askIdrPerOz = typeof rate.ask === 'number' ? rate.ask : spotIdrPerOz * (1 + SELL_SPREAD_BPS / 10000);
+  // Opsi A:
+  // dataset historis disimpan dalam USD/gram agar bootstrap tetap konsisten
+  // dan tidak bergantung pada FX historis IDR.
+  const spotUsdPerGram = rate.price / OUNCE_TO_GRAM;
+  const buyUsdPerGram = spotUsdPerGram * (1 - BUY_SPREAD_BPS / 10000);
+  const sellUsdPerGram = spotUsdPerGram * (1 + SELL_SPREAD_BPS / 10000);
 
   const point = {
     date: today,
-    spot: toRupiah(spotIdrPerOz / OUNCE_TO_GRAM),
-    buy: toRupiah(bidIdrPerOz / OUNCE_TO_GRAM),
-    sell: toRupiah(askIdrPerOz / OUNCE_TO_GRAM),
+    spot: roundPrice(spotUsdPerGram),
+    buy: roundPrice(buyUsdPerGram),
+    sell: roundPrice(sellUsdPerGram),
   };
 
   const history = normalizeHistory(existing);
@@ -168,8 +173,9 @@ async function appendTodayToDataset(existing, latest) {
   const dataset = {
     version: 1,
     updated_at: new Date(latest.timestamp || new Date().toISOString()).toISOString(),
-    currency: 'IDR',
+    currency: 'USD',
     unit: 'gram',
+    basis: 'spot_per_gram',
     points: trimToMaxDays(points, MAX_HISTORY_DAYS),
   };
 
@@ -187,7 +193,6 @@ async function appendTodayToDataset(existing, latest) {
 
 async function bootstrapAllHistory() {
   const end = new Date();
-  // Use yesterday as bootstrap end to avoid duplicating the fresh snapshot in the same run.
   end.setUTCDate(end.getUTCDate() - 1);
 
   const start = new Date(end);
@@ -198,8 +203,9 @@ async function bootstrapAllHistory() {
   const dataset = {
     version: 1,
     updated_at: new Date().toISOString(),
-    currency: 'IDR',
+    currency: 'USD',
     unit: 'gram',
+    basis: 'spot_per_gram',
     points: trimToMaxDays(rawPoints, MAX_HISTORY_DAYS),
   };
 
@@ -239,20 +245,17 @@ async function fetchBootstrapPoints(startDate, endDate) {
     const rates = ts?.rates || {};
     for (const [date, snapshot] of Object.entries(rates)) {
       const goldUsdPerOz = snapshot?.metals?.gold;
-      const usdToIdr = snapshot?.currencies?.IDR;
+      if (typeof goldUsdPerOz !== 'number') continue;
 
-      if (typeof goldUsdPerOz !== 'number' || typeof usdToIdr !== 'number') continue;
-
-      const spotIdrPerOz = goldUsdPerOz * usdToIdr;
-      const spotIdrPerGram = spotIdrPerOz / OUNCE_TO_GRAM;
-      const buyIdrPerGram = spotIdrPerGram * (1 - BUY_SPREAD_BPS / 10000);
-      const sellIdrPerGram = spotIdrPerGram * (1 + SELL_SPREAD_BPS / 10000);
+      const spotUsdPerGram = goldUsdPerOz / OUNCE_TO_GRAM;
+      const buyUsdPerGram = spotUsdPerGram * (1 - BUY_SPREAD_BPS / 10000);
+      const sellUsdPerGram = spotUsdPerGram * (1 + SELL_SPREAD_BPS / 10000);
 
       points.push({
         date,
-        spot: toRupiah(spotIdrPerGram),
-        buy: toRupiah(buyIdrPerGram),
-        sell: toRupiah(sellIdrPerGram),
+        spot: roundPrice(spotUsdPerGram),
+        buy: roundPrice(buyUsdPerGram),
+        sell: roundPrice(sellUsdPerGram),
       });
     }
 
@@ -260,20 +263,30 @@ async function fetchBootstrapPoints(startDate, endDate) {
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
+  console.log('[gold-price-sync] bootstrap collected points', points.length);
+
   return dedupeAndSort(points);
 }
 
 function normalizeHistory(existing) {
   if (!existing || typeof existing !== 'object') {
-    return { version: 1, updated_at: null, currency: 'IDR', unit: 'gram', points: [] };
+    return {
+      version: 1,
+      updated_at: null,
+      currency: 'USD',
+      unit: 'gram',
+      basis: 'spot_per_gram',
+      points: [],
+    };
   }
 
   const points = Array.isArray(existing.points) ? existing.points : [];
   return {
     version: Number(existing.version || 1),
     updated_at: existing.updated_at || null,
-    currency: existing.currency || 'IDR',
+    currency: existing.currency || 'USD',
     unit: existing.unit || 'gram',
+    basis: existing.basis || 'spot_per_gram',
     points: dedupeAndSort(points.map(normalizePoint).filter(Boolean)),
   };
 }
@@ -286,9 +299,9 @@ function normalizePoint(point) {
 
   return {
     date,
-    spot: toRupiah(Number(point.spot || point.spot_price_idr || 0)),
-    buy: toRupiah(Number(point.buy || point.buy_price_idr || 0)),
-    sell: toRupiah(Number(point.sell || point.sell_price_idr || 0)),
+    spot: roundPrice(Number(point.spot || point.spot_price_idr || 0)),
+    buy: roundPrice(Number(point.buy || point.buy_price_idr || 0)),
+    sell: roundPrice(Number(point.sell || point.sell_price_idr || 0)),
   };
 }
 
@@ -327,15 +340,22 @@ function toRupiah(value) {
   return Math.round(Number(value));
 }
 
+function roundPrice(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
 async function shopifyGraphQL(query, variables = {}) {
-  const response = await fetch(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  const response = await fetch(
+    `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
+      },
+      body: JSON.stringify({ query, variables }),
+    }
+  );
 
   const json = await response.json();
   if (!response.ok || json.errors) {
