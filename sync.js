@@ -7,20 +7,33 @@ const METALS_API_KEY = mustEnv('METALS_API_KEY');
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-04';
 const METALS_BASE_URL = process.env.METALS_BASE_URL || 'https://api.metals.dev/v1';
 
-const METAOBJECT_TYPE_CURRENT = 'gold_price_current';
-const METAOBJECT_HANDLE_CURRENT = 'current';
-
-const METAOBJECT_TYPE_DATASET = 'gold_price_dataset';
-const METAOBJECT_HANDLE_DATASET = 'dataset';
-
 const OUNCE_TO_GRAM = 31.1034768;
-
-// Tune these later if the client wants a different spread model.
 const BUY_SPREAD_BPS = Number(process.env.BUY_SPREAD_BPS || 75);   // 0.75%
 const SELL_SPREAD_BPS = Number(process.env.SELL_SPREAD_BPS || 125); // 1.25%
 const MAX_HISTORY_DAYS = Number(process.env.MAX_HISTORY_DAYS || 365);
 
 const forceBootstrap = process.argv.includes('--bootstrap');
+
+const METAL_CONFIGS = [
+  {
+    key: 'gold',
+    metal: 'gold',
+    currentType: 'gold_price_current',
+    currentHandle: 'current',
+    datasetType: 'gold_price_dataset',
+    datasetHandle: 'dataset',
+    syncDataset: true,
+    sourceLabel: 'metals.dev spot gold',
+  },
+  {
+    key: 'silver',
+    metal: 'silver',
+    currentType: 'silver_price_current',
+    currentHandle: 'current',
+    syncDataset: false,
+    sourceLabel: 'metals.dev spot silver',
+  },
+];
 
 main().catch((error) => {
   console.error('[gold-price-sync] fatal error');
@@ -29,30 +42,40 @@ main().catch((error) => {
 });
 
 async function main() {
-  if (forceBootstrap) {
-    await bootstrapAllHistory();
-    const latest = await fetchLatestSpot();
-    await upsertCurrent(latest);
-    await appendTodayToDataset(await loadDatasetHistory(), latest);
-    return;
+  for (const config of METAL_CONFIGS) {
+    await syncMetal(config);
   }
-
-  const existingHistory = await loadDatasetHistory();
-  const latest = await fetchLatestSpot();
-
-  await upsertCurrent(latest);
-
-  if (!existingHistory) {
-    await bootstrapAllHistory();
-    await appendTodayToDataset(await loadDatasetHistory(), latest);
-    return;
-  }
-
-  await appendTodayToDataset(existingHistory, latest);
 }
 
-async function fetchLatestSpot() {
-  const latest = await metalsJson(`/metal/spot?metal=gold&currency=IDR`);
+async function syncMetal(config) {
+  const latest = await fetchLatestSpot(config.metal);
+  await upsertCurrent(config, latest);
+
+  if (!config.syncDataset) {
+    return;
+  }
+
+  if (forceBootstrap) {
+    const bootstrapped = await bootstrapAllHistory(config);
+    await appendTodayToDataset(config, bootstrapped, latest);
+    return;
+  }
+
+  const existingHistory = await loadDatasetHistory(config);
+
+  if (!existingHistory) {
+    const bootstrapped = await bootstrapAllHistory(config);
+    await appendTodayToDataset(config, bootstrapped, latest);
+    return;
+  }
+
+  await appendTodayToDataset(config, existingHistory, latest);
+}
+
+async function fetchLatestSpot(metal) {
+  const latest = await metalsJson(
+    `/metal/spot?metal=${encodeURIComponent(metal)}&currency=IDR`
+  );
 
   const rate = latest?.rate;
   if (!rate || typeof rate.price !== 'number') {
@@ -62,7 +85,7 @@ async function fetchLatestSpot() {
   return latest;
 }
 
-async function upsertCurrent(latest) {
+async function upsertCurrent(config, latest) {
   const rate = latest?.rate;
 
   const spotIdrPerOz = rate.price;
@@ -81,8 +104,8 @@ async function upsertCurrent(latest) {
   const sellIdrPerGram = toRupiah(askIdrPerOz / OUNCE_TO_GRAM);
 
   await upsertMetaobject({
-    type: METAOBJECT_TYPE_CURRENT,
-    handle: METAOBJECT_HANDLE_CURRENT,
+    type: config.currentType,
+    handle: config.currentHandle,
     fields: [
       {
         key: 'updated_at',
@@ -102,12 +125,12 @@ async function upsertCurrent(latest) {
       },
       {
         key: 'source',
-        value: 'metals.dev spot',
+        value: config.sourceLabel,
       },
     ],
   });
 
-  console.log('[gold-price-sync] updated current snapshot', {
+  console.log(`${tag(config)} updated current snapshot`, {
     updated_at: latest.timestamp || new Date().toISOString(),
     spot_price_idr: spotIdrPerGram,
     buy_price_idr: buyIdrPerGram,
@@ -115,7 +138,7 @@ async function upsertCurrent(latest) {
   });
 }
 
-async function loadDatasetHistory() {
+async function loadDatasetHistory(config) {
   const query = /* GraphQL */ `
     query DatasetHistory($handle: MetaobjectHandleInput!) {
       metaobjectByHandle(handle: $handle) {
@@ -130,8 +153,8 @@ async function loadDatasetHistory() {
 
   const data = await shopifyGraphQL(query, {
     handle: {
-      type: METAOBJECT_TYPE_DATASET,
-      handle: METAOBJECT_HANDLE_DATASET,
+      type: config.datasetType,
+      handle: config.datasetHandle,
     },
   });
 
@@ -145,10 +168,12 @@ async function loadDatasetHistory() {
   }
 }
 
-async function appendTodayToDataset(existing, latest) {
-  const latestUsd = await metalsJson(`/metal/spot?metal=gold&currency=USD`);
-  const usdRate = latestUsd?.rate;
+async function appendTodayToDataset(config, existing, latest) {
+  const latestUsd = await metalsJson(
+    `/metal/spot?metal=${encodeURIComponent(config.metal)}&currency=USD`
+  );
 
+  const usdRate = latestUsd?.rate;
   if (!usdRate || typeof usdRate.price !== 'number') {
     throw new Error(`Unexpected Metals.Dev USD spot response: ${safeStringify(latestUsd)}`);
   }
@@ -186,25 +211,25 @@ async function appendTodayToDataset(existing, latest) {
   };
 
   await upsertMetaobject({
-    type: METAOBJECT_TYPE_DATASET,
-    handle: METAOBJECT_HANDLE_DATASET,
+    type: config.datasetType,
+    handle: config.datasetHandle,
     fields: [
       { key: 'updated_at', value: dataset.updated_at },
       { key: 'history_json', value: JSON.stringify(dataset) },
     ],
   });
 
-  console.log('[gold-price-sync] appended dataset point', point);
+  console.log(`${tag(config)} appended dataset point`, point);
 }
 
-async function bootstrapAllHistory() {
+async function bootstrapAllHistory(config) {
   const end = new Date();
   end.setUTCDate(end.getUTCDate() - 1);
 
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - (MAX_HISTORY_DAYS - 1));
 
-  const rawPoints = await fetchBootstrapPoints(start, end);
+  const rawPoints = await fetchBootstrapPoints(config, start, end);
 
   const dataset = {
     version: 1,
@@ -216,22 +241,24 @@ async function bootstrapAllHistory() {
   };
 
   await upsertMetaobject({
-    type: METAOBJECT_TYPE_DATASET,
-    handle: METAOBJECT_HANDLE_DATASET,
+    type: config.datasetType,
+    handle: config.datasetHandle,
     fields: [
       { key: 'updated_at', value: dataset.updated_at },
       { key: 'history_json', value: JSON.stringify(dataset) },
     ],
   });
 
-  console.log('[gold-price-sync] bootstrapped dataset', {
+  console.log(`${tag(config)} bootstrapped dataset`, {
     points: dataset.points.length,
     start: dataset.points[0]?.date,
     end: dataset.points[dataset.points.length - 1]?.date,
   });
+
+  return dataset;
 }
 
-async function fetchBootstrapPoints(startDate, endDate) {
+async function fetchBootstrapPoints(config, startDate, endDate) {
   const points = [];
   let cursor = new Date(startDate);
 
@@ -250,10 +277,10 @@ async function fetchBootstrapPoints(startDate, endDate) {
 
     const rates = ts?.rates || {};
     for (const [date, snapshot] of Object.entries(rates)) {
-      const goldUsdPerOz = snapshot?.metals?.gold;
-      if (typeof goldUsdPerOz !== 'number') continue;
+      const metalUsdPerOz = snapshot?.metals?.[config.metal];
+      if (typeof metalUsdPerOz !== 'number') continue;
 
-      const spotUsdPerGram = goldUsdPerOz / OUNCE_TO_GRAM;
+      const spotUsdPerGram = metalUsdPerOz / OUNCE_TO_GRAM;
       const buyUsdPerGram = spotUsdPerGram * (1 - BUY_SPREAD_BPS / 10000);
       const sellUsdPerGram = spotUsdPerGram * (1 + SELL_SPREAD_BPS / 10000);
 
@@ -269,8 +296,7 @@ async function fetchBootstrapPoints(startDate, endDate) {
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
-  console.log('[gold-price-sync] bootstrap collected points', points.length);
-
+  console.log(`${tag(config)} bootstrap collected points`, points.length);
   return dedupeAndSort(points);
 }
 
@@ -442,4 +468,8 @@ function safeStringify(value) {
   } catch {
     return String(value);
   }
+}
+
+function tag(config) {
+  return `[gold-price-sync:${config.key}]`;
 }
