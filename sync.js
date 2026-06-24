@@ -146,19 +146,25 @@ async function loadDatasetHistory() {
 }
 
 async function appendTodayToDataset(existing, latest) {
-  const rate = latest?.rate;
-  if (!rate || typeof rate.price !== 'number') {
-    throw new Error(`Unexpected Metals.Dev spot response: ${safeStringify(latest)}`);
+  const latestUsd = await metalsJson(`/metal/spot?metal=gold&currency=USD`);
+  const usdRate = latestUsd?.rate;
+
+  if (!usdRate || typeof usdRate.price !== 'number') {
+    throw new Error(`Unexpected Metals.Dev USD spot response: ${safeStringify(latestUsd)}`);
   }
 
   const today = toDateKey(latest.timestamp || new Date().toISOString());
 
-  // Opsi A:
-  // dataset historis disimpan dalam USD/gram agar bootstrap tetap konsisten
-  // dan tidak bergantung pada FX historis IDR.
-  const spotUsdPerGram = rate.price / OUNCE_TO_GRAM;
-  const buyUsdPerGram = spotUsdPerGram * (1 - BUY_SPREAD_BPS / 10000);
-  const sellUsdPerGram = spotUsdPerGram * (1 + SELL_SPREAD_BPS / 10000);
+  const spotUsdPerGram = usdRate.price / OUNCE_TO_GRAM;
+  const buyUsdPerGram =
+    typeof usdRate.bid === 'number'
+      ? usdRate.bid / OUNCE_TO_GRAM
+      : spotUsdPerGram * (1 - BUY_SPREAD_BPS / 10000);
+
+  const sellUsdPerGram =
+    typeof usdRate.ask === 'number'
+      ? usdRate.ask / OUNCE_TO_GRAM
+      : spotUsdPerGram * (1 + SELL_SPREAD_BPS / 10000);
 
   const point = {
     date: today,
